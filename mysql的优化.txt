@@ -1,0 +1,142 @@
+## SQL优化
+
+
+
+### type(访问类型)
+
+- all
+- index
+- range
+- ref
+- eq_ref
+- const,system
+- null
+
+> 从上到下的性能由差到好
+
+
+
+（1）type= all 全表扫描 遍历全表来找到匹配的行 这里指的是*
+
+```mysql
+select * from file where rating > 9;
+```
+
+（2）type = index 索引全扫描 遍历整个索引来查询匹配的行  这里指的是 title字段
+
+```mysql
+select title from file
+```
+
+（3）type = range 索引范围扫描 常见于 <、<=、> 、>= 、between 等操作符
+
+这里指的是 where后面的一个范围 ，和（1）相比就是在一个确定的范围内
+
+```mysql
+select * from payment where customer_id >= 300 and customer_id <=450;
+```
+
+（4）type =ref 使用非唯一索引扫描或者唯一索引的前缀扫描。返回匹配某个单独值的记录行  这里指的是 where后有一个确定值
+
+因为这个 idx_fk_customer_id 是非唯一索引值
+
+```mysql
+mysql> explain select * from payment where customer_id = 350\G;
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: payment
+   partitions: NULL
+         type: ref
+possible_keys: idx_fk_customer_id
+          key: idx_fk_customer_id
+      key_len: 2
+          ref: const
+         rows: 23
+     filtered: 100.00
+        Extra: NULL
+1 row in set, 1 warning (0.00 sec)
+
+```
+
+（5）type = eq_ref 区别就在使用的索引是唯一索引，对于每个索引值，表中只有一条记录匹配；简单来说就是多表连接中使用primary key或者unique index 作为关联条件
+
+```mysql
+mysql> explain select * from film a,film_text b where a.film_id = b.film_id \G;
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: b
+   partitions: NULL
+         type: ALL
+possible_keys: PRIMARY
+          key: NULL
+      key_len: NULL
+          ref: NULL
+         rows: 1000
+     filtered: 100.00
+        Extra: NULL
+*************************** 2. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: a
+   partitions: NULL
+         type: eq_ref
+possible_keys: PRIMARY
+          key: PRIMARY
+      key_len: 2
+          ref: sakila.b.film_id
+         rows: 1
+     filtered: 100.00
+        Extra: Using where
+2 rows in set, 1 warning (0.00 sec)
+
+```
+
+(6) type = const/ststem   单表中最多有一个匹配行，查询起来十分迅速，所以这个匹配行中的其他的值可以被优化器在当前查询中当做常量来处理。例如根据主键  primary key或者唯一索引unique index 进行的查询
+
+
+
+### MySQL 唯一索引和非唯一索引（普通索引）区别
+
+如果在一个列上同时建唯一索引和普通索引的话，mysql 会自动选择唯一索引
+唯一索引和普通索引使用的结构都是 B-tree，执行时间复杂度都是 O(log n)
+
+#### 普通索引（非唯一索引）
+
+普通索引（由关键字 KEY 或 INDEX 定义的索引）的唯一任务是加快对数据的访问速度。因此，应该只为那些最经常出现在查询条件（WHERE column =）或排序条件（ORDER BY column）中的数据列创建索引。只要有可能，就应该选择一个数据最整齐、最紧凑的数据列（如一个整数类型的数据列）来创建索引
+
+#### 唯一索引
+
+普通索引允许被索引的数据列包含重复的值
+
+如果能确定某个数据列将只包含彼此各不相同的值，在为这个数据列创建索引的时候就应该用关键字 UNIQUE 把它定义为一个唯一索引。这么做的好处：一是简化了 MySQL 对这个索引的管理工作，这个索引也因此而变得更有效率（区分度：distinct * / count (*) 高）；二是 MySQL 会在有新记录插入数据表时，自动检查新记录的这个字段的值是否已经在某个记录的这个字段里出现过了；如果是，MySQL 将拒绝插入那条新记录。也就是说，唯一索引可以保证数据记录的唯一性。事实上，在许多场合，人们创建唯一索引的目的往往不是为了提高访问速度，而只是为了避免数据出现重复
+
+#### 主键索引
+
+主键索引是唯一索引的特殊类型
+数据库表通常有一列或列组合，其值用来唯一标识表中的每一行。该列称为表的主键
+在数据库关系图中为表定义一个主键将自动创建主键索引，主键索引是唯一索引的特殊类型。主键索引要求主键中的每个值是唯一的。当在查询中使用主键索引时，它还允许快速访问数据
+
+它们的一些比较：
+(1) 对于主键 MySQL 会自动建立唯一索引；
+(2) 主键不一定只包含一个字段，所以可以在主键的其中一个字段建唯一索引；
+(3) 主键可作外键，唯一索引不可；
+(4) 主键不可为空，唯一索引可；
+(5) 主键也可是多个字段的组合；
+
+#### 主键与唯一索引不同的是：
+
+主键是一种约束，唯一索引是一种索引，两者在本质上是不同的。
+
+主键创建后一定包含一个唯一性索引，唯一性索引并不一定就是主键。
+
+唯一性索引列允许空值，而主键列不允许为空值。
+
+主键列在创建时，已经默认为空值 + 唯一索引了。
+
+主键可以被其他表引用为外键，而唯一索引不能。
+
+一个表最多只能创建一个主键，但可以创建多个唯一索引。
+
+主键更适合那些不容易更改的唯一标识，如自动递增列、身份证号等。
