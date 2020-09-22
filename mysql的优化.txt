@@ -2,7 +2,7 @@
 
 
 
-### type(访问类型)
+## type(访问类型)
 
 - all
 - index
@@ -140,3 +140,240 @@ possible_keys: PRIMARY
 一个表最多只能创建一个主键，但可以创建多个唯一索引。
 
 主键更适合那些不容易更改的唯一标识，如自动递增列、身份证号等。
+
+
+
+## MySQL中能够使用索引的经典场景
+
+(1) 匹配全值，对索引中所有列都指定具体值，即是对索引中的所有列都有等值匹配的条件。
+
+```mysql
+mysql> explain select * from rental where rental_date='2005-05-25 17:22:10' and inventory_id = 373 and cusstomer_id = 343 \G;
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: rental
+   partitions: NULL
+         type: const
+possible_keys: rental_date,idx_fk_inventory_id,idx_fk_customer_id
+          key: rental_date
+      key_len: 10
+          ref: const,const,const
+         rows: 1
+     filtered: 100.00
+        Extra: NULL
+1 row in set, 1 warning (0.00 sec)
+
+```
+
+
+
+访问类型是type = const 表示常量。
+
+可以观察出可能作为索引的有三个
+
+rental_date,idx_fk_inventory_id,idx_fk_customer_id
+
+但是 优化器选择的索引是rental_date进行扫描
+
+
+
+（2） 匹配值的范围查询，对索引值能够进行范围查找。
+
+```mysql
+ysql> explain select * from payment where customer_id >=300 and customer_id <= 350\G
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: payment
+   partitions: NULL
+         type: range
+possible_keys: idx_fk_customer_id
+          key: idx_fk_customer_id
+      key_len: 2
+          ref: NULL
+         rows: 1350
+     filtered: 100.00
+        Extra: Using index condition
+1 row in set, 1 warning (0.00 sec)
+
+```
+
+可以观察出访问类型是type = range；
+
+可能的索引是 idx_fk_customer_id 但是优化器实际使用的索引是idx_fk_customer_id而且Extra: Using index condition表示还使用了这个来加速访问查询数据
+
+
+
+(3)匹配最左前缀，仅仅使用索引中的最左列进行查找
+
+```mysql
+mysql> alter table payment add index idx_payment_date(payment_date, amount,last_update);
+Query OK, 0 rows affected (0.03 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+mysql> explain select * from payment where payment_date = '2006-02-14 15:16:03' and last_update = '2006-02-15 22:12:32'\G
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: payment 
+   partitions: NULL
+         type: ref
+possible_keys: idx_payment_date
+          key: idx_payment_date
+      key_len: 5
+          ref: const
+         rows: 182
+     filtered: 10.00
+        Extra: Using index condition
+1 row in set, 1 warning (0.00 sec)
+
+```
+
+首先设置了联合索引 idx_payment_date(payment_date, amount,last_update)
+
+但是查询索引中只包含了联合索引中的第一个和第三个索引，但是我们可以看到key和Extra优化器使用的依旧是联合索引
+
+但是当使用联合索引中的第二个和第三个当做查询索引的时候
+
+```mysql
+mysql> explain select * from payment where amount = 3.98 and last_update ='2006-02-15 22:12:32'\G
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: payment
+   partitions: NULL
+         type: ALL
+possible_keys: NULL
+          key: NULL
+      key_len: NULL
+          ref: NULL
+         rows: 16086
+     filtered: 1.00
+        Extra: Using where
+1 row in set, 1 warning (0.00 sec)
+
+```
+
+访问类型是type= all  ，key = null  ，Extra: Using where
+
+说明优化器并没有使用到连接索引进行优化查询
+
+这就是最左匹配原则，算是MySQL中B-Tree索引使用的首要原则
+
+最左匹配原则：当查询索引中含有联合索引最左面（第一个）索引的时候优化器
+
+就会使用联合索引就行优化查询
+
+
+
+（4） 仅仅对索引进行查询，当查询的列都在索引的字段中时，查询的效率更高
+
+查询的 ==last_update==是联合索引中的一个字段
+
+```mysql
+mysql> explain select last_update from payment where payment_date = '2006-02-14 15:16:03' and amount = 3.98\G
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: payment
+   partitions: NULL
+         type: ref
+possible_keys: idx_payment_date
+          key: idx_payment_date
+      key_len: 8
+          ref: const,const
+         rows: 8
+     filtered: 100.00
+        Extra: Using index
+1 row in set, 1 warning (0.00 sec)
+
+```
+
+由上面可看出 使用的索引依旧是联合索引但是 Extra: Using index 使用的确实索引，意味着直接访问索引便可以获得所需要的数据，不需要索引就可以回表，减少了不必要的数据访问提高了效率
+
+
+
+（5）匹配列前缀，仅仅使用索引的第一列，并且只包含索引的第一列的开头一部分查找。
+
+```mysql
+mysql> create index idx_title_desc_part on film_text (title(10),description(20));
+Query OK, 0 rows affected (0.02 sec)
+Records: 0  Duplicates: 0  Warnings: 0
+
+mysql> explain select title from film_text where title like 'AFRICAN%'\G
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: film_text
+   partitions: NULL
+         type: range
+possible_keys: idx_title_desc_part,idx_title_description
+          key: idx_title_desc_part
+      key_len: 32
+          ref: NULL
+         rows: 1
+     filtered: 100.00
+        Extra: Using where
+1 row in set, 1 warning (0.00 sec)
+
+```
+
+从执行过程中可以看出使用的索引是自定义的前缀索引
+
+ key: idx_title_desc_part
+
+Extra: Using where 表示优化器需要通过索引回表查询数据
+
+（6）能够实现索引匹配部分精确而其他部分进行范围匹配
+
+```mysql
+mysql> explain select inventory_id from rental where rental_date='2020-02-14 15:16:03' and customer_id >=300 and customer_id <= 400 \G
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: rental
+   partitions: NULL
+         type: ref
+possible_keys: rental_date,idx_fk_customer_id
+          key: rental_date
+      key_len: 5
+          ref: const
+         rows: 1
+     filtered: 16.85
+        Extra: Using where; Using index
+1 row in set, 1 warning (0.00 sec)
+
+```
+
+ type: ref 说明优化器选择时间查询
+
+key: rental_date 说明优化器使用索引rental_date 帮助快速查询
+
+由于只查询inventory_id的值，所以
+
+Extra: Using where; Using index
+
+使用index做回表查询
+
+(7) 如果列名是索引，那么使用column_name（字段名称） is null就会使用索引
+
+```mysql
+mysql> explain select * from payment where rental_id is null \G
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: payment
+   partitions: NULL
+         type: ref
+possible_keys: fk_payment_rental
+          key: fk_payment_rental
+      key_len: 5
+          ref: const
+         rows: 7
+     filtered: 100.00
+        Extra: Using index condition
+1 row in set, 1 warning (0.00 sec)
+
+```
+
