@@ -377,3 +377,169 @@ possible_keys: fk_payment_rental
 
 ```
 
+
+
+## 存在索引但是不能使用索引的经典索引
+
+（1）以%开头的like查询不能够利用B-tree索引，执行计划中的key的值为null                          表示没有使用索引
+
+```mysql
+mysql> explain select * from actor where last_name like '%NI%' \G;
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: actor
+   partitions: NULL
+         type: ALL
+possible_keys: NULL
+          key: NULL
+      key_len: NULL
+          ref: NULL
+         rows: 199
+     filtered: 11.11
+        Extra: Using where
+1 row in set, 1 warning (0.00 sec)
+```
+
+从执行计划中可以看出并没有使用索引
+
+因为B-tree索引的结构，所以%开头的查询自然就没法使用索引了，一般是使用全文检索来解决类似的全文检索问题或者考虑领用InnoDB的表都是聚簇表的特点，采取更轻量的解决方式。因为一般情况下索引都会比表更小，扫描索引会比扫描更加快速
+
+```mysql
+mysql> explain select * from (select actor_id from actor where last_name like '%NI%') a,actor b where a.actor_id = b.actor_id\G
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: actor
+   partitions: NULL
+         type: index
+possible_keys: PRIMARY
+          key: idx_actor_last_name
+      key_len: 137
+          ref: NULL
+         rows: 199
+     filtered: 11.11
+        Extra: Using where; Using index
+*************************** 2. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: b
+   partitions: NULL
+         type: eq_ref
+possible_keys: PRIMARY
+          key: PRIMARY
+      key_len: 2
+          ref: sakila.actor.actor_id
+         rows: 1
+     filtered: 100.00
+        Extra: NULL
+2 rows in set, 1 warning (0.00 sec)
+```
+
+从执行计划中可以看出，内层的Using index代表使用索引覆盖扫描，之后通过主键join操作去演员表actor中获取最终的查询结果。
+
+两者的区别：因为B-tree的索引结构导致%开头的查询没法利用索引就只能够扫描全表自然会比扫描索引的操作浪费时间，我们可以通过其他的操作把这个查询语句变成使用索引的的查询语句
+
+（2）数据类型出现隐式转换的时候也不会使用索引，特别是当类的类型是字符串，那么一定记得在where条件中把字符常量值使用引号引起来否则即便在这个列上存在索引，mysql也不会用到，因为Mysql默认把输入的常量值进行转换以后才进行索引。进行的是全表扫描\
+
+首先我们想先看一下actor表的字段结构
+
+```mysql\
++-------------+----------------------+------+-----+-------------------+-----------------------------+
+| Field       | Type                 | Null | Key | Default           | Extra                       |
++-------------+----------------------+------+-----+-------------------+-----------------------------+
+| actor_id    | smallint(5) unsigned | NO   | PRI | NULL              | auto_increment              |
+| first_name  | varchar(45)          | NO   |     | NULL              |                             |
+| last_name   | varchar(45)          | NO   | MUL | NULL              |                             |
+| last_update | timestamp            | NO   |     | CURRENT_TIMESTAMP | on update CURRENT_TIMESTAMP |
++-------------+----------------------+------+-----+-------------------+-----------------------------+
+4 rows in set (0.00 sec)
+
+```
+
+
+
+```mysql
+       id: 1
+  select_type: SIMPLE
+        table: actor
+   partitions: NULL
+         type: ALL
+possible_keys: idx_actor_last_name
+          key: NULL
+      key_len: NULL
+          ref: NULL
+         rows: 199
+     filtered: 10.00
+        Extra: Using where
+1 row in set, 3 warnings (0.00 sec)
+```
+
+可以看出并没有使用索引查询，使用的是索引查询
+
+```mysql
+        id: 1
+  select_type: SIMPLE
+        table: actor
+   partitions: NULL
+         type: ref
+possible_keys: idx_actor_last_name
+          key: idx_actor_last_name
+      key_len: 137
+          ref: const
+         rows: 1
+     filtered: 100.00
+        Extra: NULL
+1 row in set, 1 warning (0.00 sec)
+```
+
+这里不需要进行字段数据类型的数据转化，索引就会使用索引查询
+
+（3）复合索引的情况，假如查询条件中不包含索引列最左边的情况也不会遵循最左查询的原则
+
+```msyql
+mysql> explain select * from payment where amount = 3.98 and last_update='2006-02-15 22:12:32'\G
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: payment
+   partitions: NULL
+         type: ALL
+possible_keys: NULL
+          key: NULL
+      key_len: NULL
+          ref: NULL
+         rows: 16086
+     filtered: 1.00
+        Extra: Using where
+1 row in set, 1 warning (0.00 sec)
+```
+
+最左原则 看前面 前面有介绍的
+
+(4)如果mysql估计使用索引比全表查询个更慢则不使用索引
+
+这个就不写了
+
+（5）用or分隔开的条件 如果or前的条件中的列有索引，而后面的列中没有索引，那么涉及的索引都不会被用到
+
+```mysql
+mysql> explain select * from payment where customer_id =203 or amount = 3.96\G
+*************************** 1. row ***************************
+           id: 1
+  select_type: SIMPLE
+        table: payment
+   partitions: NULL
+         type: ALL
+possible_keys: idx_fk_customer_id
+          key: NULL
+      key_len: NULL
+          ref: NULL
+         rows: 16086
+     filtered: 10.15
+        Extra: Using where
+1 row in set, 1 warning (0.00 sec)
+
+```
+
+因为or后面的不存在那个索引，索引后面的查询肯定走的是全表查询。
